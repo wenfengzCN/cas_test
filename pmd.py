@@ -1,82 +1,127 @@
 #!/usr/bin/python3
+import threading
 import subprocess
+import json
 import time
+import logging
 import pandas as pd
-from orm.commit import *
 import xml.etree.ElementTree as ET
 
-show_cmd = file_cmd = 'git show {!s}:{!s} > {!s}'
-pmd_cmd = '/opt/pmd-bin-6.1.0/bin/run.sh pmd -d {!s} -f xml -r  {!s} -rulesets  category/java/codestyle.xml,' \
-          'category/java/bestpractices.xml,category/java/documentation.xml,category/java/errorprone.xml,category/java/multithreading.xml,' \
-          'category/java/performance.xml,category/java/design.xml -cache /home/wenfeng/vlis/cas_test/file_tmp/cachefile'
-rm_cmd = 'rm {!s} {!s}'
-file_tmp = '/home/wenfeng/vlis/cas_test/file_tmp/tmp.java'
-xml_tmp = '/home/wenfeng/vlis/cas_test/file_tmp/tmp.xml'
-repo_id = 'jetty1710'
-repo_dir='/home/wenfeng/vlis/cas_vlis/ingester/CASRepos/git/' + repo_id
-MAX_LINE = 10000
-pmd_dict = {}
+config = json.load(open('./pmd_config.json'))
+BASIC_PATH = config['BASIC_PATH']
+PMD_PATH = config['PMD_PATH']
+
+class MyThread(threading.Thread):
+    def __init__(self,func,args,name=''):
+        threading.Thread.__init__(self)
+        self.name = name
+        self.func = func
+        self.args = args
+
+    def run(self):
+        self.func(*self.args)
+
+class Pmd():
+    """
+    get pmd result
+
+    """
+
+    SHOW_CMD = 'git show {!s}:{!s} > {!s}'
+    PMD_CMD= PMD_PATH + 'bin/run.sh pmd -d {!s} -f xml -r  {!s} -rulesets  category/java/codestyle.xml,' \
+              'category/java/bestpractices.xml,category/java/documentation.xml,category/java/errorprone.xml,category/java/multithreading.xml,' \
+              'category/java/performance.xml,category/java/design.xml -cache {!s}'
+    RM_CMD = 'rm {!s} {!s}'
+    MAX_LINE = 10000
+
+    def __init__(self,repo_id,time_logger):
+        self.repo_id = repo_id
+        self.java_tmp = BASIC_PATH + 'cas_test/tmp/tmp_' + repo_id + '.java'
+        self.xml_tmp = './tmp/tmp_' + repo_id + '.xml'
+        self.cache_tmp = './tmp/cache_' + repo_id
+        self.repo_dir = BASIC_PATH + 'cas_vlis/ingester/CASRepos/git/' + repo_id
+        self.test_csv = BASIC_PATH + 'testset/' +repo_id+'_test'
+        # init log
+        self.basic_logger = logging.getLogger(repo_id+' log')
+        self.basic_logger.setLevel(logging.INFO)
+        self.basic_logger.addHandler(logging.FileHandler("./log/" + repo_id + '.log'))
+        self.time_logger = time_logger
 
 
+    def parse_xml(self, commit, file_name, xml_file):
+        tree = ET.ElementTree(file=xml_file)
+        pmd_result = {}
+        for elem in tree.iter('{http://pmd.sourceforge.net/report/2.0.0}file'):
+            for violation in elem.iter(tag='{http://pmd.sourceforge.net/report/2.0.0}violation'):
+                begin = violation.get('beginline')
+                priority=  violation.get('priority')
+                key = commit + '_' + file_name + '_' + str(begin)
+                if key in pmd_result:
+                    if pmd_result[key] > priority:
+                        pmd_result[key] = priority
+                else:
+                    pmd_result[key] = priority
+        return pmd_result
 
-def parse_xml(commit, file_name, xml_file):
-    results  = []
-    tree = ET.ElementTree(file=xml_file)
-    for elem in tree.iter('{http://pmd.sourceforge.net/report/2.0.0}file'):
-        for violation in elem.iter(tag='{http://pmd.sourceforge.net/report/2.0.0}violation'):
-            begin = violation.get('beginline')
-            priority=  violation.get('priority')
-            key = commit + '_' + file_name + '_' + str(begin)
-            if key in pmd_dict:
-                if pmd_dict[key] > priority:
-                    pmd_dict[key] = priority
-            else:
-                pmd_dict[key] = priority
 
-
-# get the modified files after the commit
-def get_pmd(commit, files):
-    for file in files:
+    # get the modified files after the commit
+    def get_pmd(self,commit, file):
         try:
-            subprocess.call(show_cmd.format(commit,file,file_tmp), shell=True,cwd=repo_dir)
+            subprocess.call(self.SHOW_CMD.format(commit,file,self.java_tmp), shell=True,cwd=self.repo_dir)
         except:
-            continue
-        p = subprocess.Popen(pmd_cmd.format(file_tmp,xml_tmp), shell=True,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
-        stdout,stderr = p.communicate()
+            pass
+        p = subprocess.Popen(self.PMD_CMD.format(self.java_tmp, self.xml_tmp,self.cache_tmp), shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        stdout, stderr = p.communicate()
+        self.basic_logger.info(stdout)
+        self.basic_logger.info(stderr)
+        pmd_result = self.parse_xml(commit,file,self.xml_tmp)
+        subprocess.call(self.RM_CMD.format(self.java_tmp,self.xml_tmp),shell=True)
+        return pmd_result
 
+    def pmdMain(self):
+        start_time = time.time()
+        file = pd.read_csv(self.test_csv+'.csv',encoding='ISO-8859-1').assign(pmd=None)
+        d_row = file.duplicated(['commit_hash','file_new'],'first')
+        pmd_reslut = {}
 
-        parse_xml(commit,file,xml_tmp)
-        subprocess.call(rm_cmd.format(file_tmp,xml_tmp),shell=True)
+        for index, row in file.iterrows():
+            if d_row[index] == False:
+                # a new version of file and start pmd program
+                pmd_reslut = self.get_pmd(row['commit_hash'],row['file_new'])
 
-def main(repoId):
-    add_csv = '/home/wenfeng/vlis/cas_vlis/ingester/CASRepos/diff/' + repo_id + '/'+repo_id+'_add'
+            test = row['commit_hash']+'_'+row['file_new'] + '_' + str(row['line_num'])
+            if test in pmd_reslut:
+                file.loc[index,'pmd'] = pmd_reslut[test]
+            else:
+                file.loc[index, 'pmd'] = 0
+        file.to_csv(self.test_csv+'_pmd.csv')
+        end_time = time.time()
+        self.time_logger.info(self.repo_id,"using time(min):", (end_time-start_time)/60)
 
-    # get commit hash
-    session = Session()
-    commits = (session.query(Commit).filter((Commit.repository_id==repoId))
-               .order_by( Commit.author_date_unix_timestamp.desc()).all())
-    # get pmd rank
-    for commit in commits:
-        files_tmp = commit.fileschanged.split(',CAS_DELIMITER,')
-        files = []
-        for item in files_tmp:
-            name = item.strip(',CAS_DELIMITER')
-            if name.endswith('.java'):
-                files.append(name)
-        if files != []:
-            get_pmd(commit.commit_hash,files)
+def loop(repo_id,time_logger):
+    pmd = Pmd(repo_id,time_logger)
+    pmd.pmdMain()
 
-    # add new attribute in add.csv
-    file = pd.read_csv(add_csv+'.csv')
-    file['pmd'] = None
-    for index, row in file.iterrows():
-        test = row['commit_hash']+'_'+row['file_new'] + '_' + str(row['line_num'])
-        if test in pmd_dict:
-            file.loc[index,'pmd'] = pmd_dict[test]
+def main(repos):
+    time_logger = logging.getLogger('time_consuming')
+    time_logger.setLevel(logging.INFO)
+    time_logger.addHandler(logging.FileHandler("./log/time_consuming.log" ))
+    threads = []
+    for repo in repos:
+        t = MyThread(loop,(repo,time_logger))
+        threads.append(t)
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+if __name__=='__main__':
+    repos = []
+    while(True):
+        x = input("Please input the repo to analyze('End' to finish):")
+        if x == 'End':
+            print ("Begining to analyze!")
+            break
         else:
-            file.loc[index, 'pmd'] = 0
-    file.to_csv(add_csv+'_pmd.csv',index=False)
-
-    session.commit()
-    session.close()
-main(repo_id)
+            repos.append(x)
+    main(repos)
