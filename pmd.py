@@ -79,7 +79,8 @@ class Pmd():
         return pmd_result
 
     def pmdMain(self):
-        start_time = time.time()
+        process_start = time.process_time()
+        print (self.repo_id,'Begining to analyze!')
         file = pd.read_csv(self.test_csv+'.csv',encoding='ISO-8859-1').assign(pmd=None)
         d_row = file.duplicated(['commit_hash','file_new'],'first')
         pmd_reslut = {}
@@ -94,9 +95,11 @@ class Pmd():
                 file.loc[index,'pmd'] = pmd_reslut[test]
             else:
                 file.loc[index, 'pmd'] = 0
-        file.to_csv(self.test_csv+'_pmd.csv')
-        end_time = time.time()
-        self.time_logger.info(self.repo_id,"using time(min):", (end_time-start_time)/60)
+        file.to_csv(self.test_csv+'_pmd.csv',index=False)
+        process_end = time.process_time()
+        cost_time = (process_end-process_start)/60
+        print (self.repo_id, ': analyzing finished! using time(min:)', cost_time)
+        self.time_logger.info(self.repo_id,"analyzing finished! using time(min):", cost_time)
 
 def loop(repo_id,time_logger):
     pmd = Pmd(repo_id,time_logger)
@@ -117,11 +120,11 @@ def main(repos):
 
 if __name__=='__main__':
     repos = []
-    while(True):
-        x = input("Please input the repo to analyze('End' to finish):")
-        if x == 'End':
-            print ("Begining to analyze!")
-            break
-        else:
-            repos.append(x)
+    # while(True):
+    #     x = input("Please input the repo to analyze('End' to finish input):")
+    #     if x == 'End':
+    #         print ("Begining to analyze!")
+    #         break
+    #     else:
+    #         repos.append(x)
     main(repos)
