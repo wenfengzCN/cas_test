@@ -90,7 +90,7 @@ class Pmd():
                 # a new version of file and start pmd program
                 pmd_reslut = self.get_pmd(row['commit_hash'],row['file_new'])
 
-            test = row['commit_hash']+'_'+row['file_new'] + '_' + str(row['line_num'])
+            test = row['commit_hash'] + '_' + row['file_new'] + '_' + str(row['line_num'])
             if test in pmd_reslut:
                 file.loc[index,'pmd'] = pmd_reslut[test]
             else:
@@ -99,7 +99,7 @@ class Pmd():
         process_end = time.process_time()
         cost_time = (process_end-process_start)/60
         print (self.repo_id, ': analyzing finished! using time(min:)', cost_time)
-        self.time_logger.info(self.repo_id,"analyzing finished! using time(min):", cost_time)
+        self.time_logger.info(self.repo_id + " analyzing finished! using time(min):" + str(cost_time))
 
 def loop(repo_id,time_logger):
     pmd = Pmd(repo_id,time_logger)
